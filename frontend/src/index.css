@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+:root {
+  --bg:       #0a0a0f;
+  --surface:  #13131a;
+  --surface2: #1c1c27;
+  --accent:   #e8c84a;
+  --accent2:  #ff6b35;
+  --text:     #e8e8f0;
+  --text2:    #8888aa;
+  --border:   #2a2a3a;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; }
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* Three.js canvas */
+#viewer-root canvas { display: block; width: 100% !important; height: 100% !important; }
