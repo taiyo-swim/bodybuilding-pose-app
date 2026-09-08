@@ -1,73 +1,35 @@
-# React + TypeScript + Vite
+# frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Bodybuilding Pose App のフロントエンド (React 19 + TypeScript + Vite + Tailwind CSS 4 + Three.js)。
 
-Currently, two official plugins are available:
+通常はリポジトリルートの `./dev.sh` / `./start.sh` から起動する。
+このディレクトリ単体で操作する場合は以下を使う。
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install       # 依存関係のインストール
+npm run dev       # 開発サーバー (http://localhost:5173、/api と /models は :8000 にプロキシ)
+npm run build     # 型チェック + 本番ビルド → dist/
+npm run lint      # ESLint
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+`npm run dev` はバックエンド (`uvicorn backend.main:app --port 8000`) が
+起動していることを前提にしている。
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## 構成
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+| パス | 役割 |
+|------|------|
+| `src/App.tsx` | ルート状態管理（音源・ルーティン・ポーズ・モデル） |
+| `src/components/` | サイドバーの各パネルと3Dビュー・再生バー |
+| `src/lib/viewer3d.ts` | Three.js シーン、GLBロード、ボーンアニメーション |
+| `src/lib/player.ts` | 音楽再生とポーズ表示の同期 |
+| `src/lib/api.ts` | バックエンドAPIクライアント |
+| `src/lib/pywebview.ts` | デスクトップ版のネイティブファイル選択ダイアログ連携 |
+| `src/lib/poseLabels.ts` | ポーズ名の日本語表示 |
+
+## スタイルの注意点
+
+Tailwind CSS 4 はユーティリティを CSS cascade layer に出力する。
+レイヤー外のスタイルはレイヤー内のスタイルより詳細度に関係なく優先されるため、
+`src/index.css` のリセット (`* { padding: 0 }` など) は必ず `@layer base` の中に置くこと。
+レイヤー外に書くと `p-4` などの余白ユーティリティがすべて無効になる。

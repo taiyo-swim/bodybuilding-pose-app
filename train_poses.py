@@ -34,7 +34,13 @@ from pathlib import Path
 # backend パッケージを import できるようにプロジェクトルートをパスに追加
 sys.path.insert(0, str(Path(__file__).parent))
 
-from backend.database import init_db, save_pose, get_poses, get_connection
+from backend.database import (
+    delete_poses_by_name,
+    get_connection,
+    get_poses,
+    init_db,
+    save_pose,
+)
 from backend.pose_extractor import extract_representative_pose
 
 # ポーズ名ごとのデフォルトメタデータ
@@ -60,7 +66,11 @@ def process_video(video_path: Path, pose_name: str, category: str, energy: float
     """動画からポーズを抽出してDBに保存する。成功したら True を返す。"""
     print(f"  処理中: {video_path.name} → '{pose_name}'")
 
-    pose_data = extract_representative_pose(str(video_path))
+    try:
+        pose_data = extract_representative_pose(str(video_path))
+    except Exception as exc:
+        print(f"  ✗ 解析に失敗しました: {video_path.name} ({exc})")
+        return False
     if not pose_data:
         print(f"  ✗ ポーズを検出できませんでした: {video_path.name}")
         return False
@@ -69,10 +79,7 @@ def process_video(video_path: Path, pose_name: str, category: str, energy: float
     timestamp = pose_data.get('timestamp', 0)
 
     if replace:
-        conn = get_connection()
-        deleted = conn.execute("DELETE FROM poses WHERE name = ?", (pose_name,)).rowcount
-        conn.commit()
-        conn.close()
+        deleted = delete_poses_by_name(pose_name)
         if deleted:
             print(f"    既存ポーズを上書き (削除: {deleted}件)")
 
@@ -160,7 +167,13 @@ def main() -> None:
 
     else:
         print(f"エラー: パスが存在しません: {target}")
-        print("使い方: python train_poses.py [動画ファイルまたはフォルダパス]")
+        if str(target) == 'training_videos':
+            target.mkdir(parents=True, exist_ok=True)
+            print("training_videos/ フォルダを作成しました。")
+            print("ポーズ名をファイル名にした動画を入れてから再実行してください。")
+            print("例: training_videos/front_double_bicep.mp4")
+        else:
+            print("使い方: python train_poses.py [動画ファイルまたはフォルダパス]")
         sys.exit(1)
 
     print(f"\n完了: {success}件成功 / {error}件失敗")

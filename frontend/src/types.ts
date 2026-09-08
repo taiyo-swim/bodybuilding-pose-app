@@ -1,5 +1,6 @@
 export interface AudioAnalysis {
   file: string
+  original_name?: string
   duration: number
   bpm: number
   beat_times: number[]
@@ -13,6 +14,7 @@ export interface Pose {
   category: string
   energy_level: number
   keypoints: Record<string, { x: number; y: number; z: number; visibility?: number }>
+  created_at?: string
 }
 
 export interface PoseEntry {
@@ -26,12 +28,28 @@ export interface PoseEntry {
 }
 
 export interface Routine {
-  id: number
+  id: number | null
   name: string
+  audio_file: string
   bpm: number
   beat_times: number[]
   duration: number
   trim_start: number   // 曲の何秒から開始するか
   pose_count: number
   pose_sequence: PoseEntry[]
+}
+
+/** DBに保存済みのルーティン（/api/routines） */
+export interface SavedRoutine extends Routine {
+  id: number
+  created_at: string
+}
+
+export interface VideoUploadResult {
+  pose_id: number
+  name: string
+  category: string
+  energy_level: number
+  timestamp: number
+  keypoint_count: number
 }

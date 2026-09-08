@@ -1,6 +1,7 @@
 # Python
 venv/
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 *.pyd
@@ -15,6 +16,9 @@ frontend/dist/
 
 # アップロードファイル（一時データ）
 uploads/
+
+# 学習用の元動画（サイズが大きい）
+training_videos/
 
 # データベース（学習済みデータ。必要なら個別コミット）
 poses_db/

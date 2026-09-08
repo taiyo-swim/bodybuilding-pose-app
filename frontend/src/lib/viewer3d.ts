@@ -138,12 +138,37 @@ const MP_TO_BONE: Record<string, { bone: string; parent: string; child: string }
   right_knee:     { bone: 'RightLeg',     parent: 'right_knee',     child: 'right_ankle' },
 }
 
+/** ポーズ適用の対象になるボーン（定義に無いものはバインドポーズへ戻す） */
+const POSED_BONES = [
+  'LeftArm', 'LeftForeArm', 'RightArm', 'RightForeArm',
+  'LeftUpLeg', 'LeftLeg', 'RightUpLeg', 'RightLeg',
+  'Spine', 'Spine1', 'Spine2', 'Neck', 'Hips',
+  'LeftShoulder', 'RightShoulder',
+] as const
+
+/** Object3D 配下のジオメトリ・マテリアル・テクスチャを解放する */
+function disposeObject(root: THREE.Object3D) {
+  root.traverse((node) => {
+    const mesh = node as THREE.Mesh
+    if (!mesh.isMesh) return
+    mesh.geometry?.dispose()
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+    for (const material of materials) {
+      if (!material) continue
+      for (const value of Object.values(material)) {
+        if (value && (value as THREE.Texture).isTexture) (value as THREE.Texture).dispose()
+      }
+      material.dispose()
+    }
+  })
+}
+
 export class Viewer3D {
   private renderer: THREE.WebGLRenderer
   private scene: THREE.Scene
   private camera: THREE.PerspectiveCamera
   private controls: OrbitControls
-  private clock = new THREE.Clock()
+  private timer = new THREE.Timer()
   private model: THREE.Group | null = null
   private bones: Record<string, THREE.Bone> = {}
   private bonesByBaseName: Record<string, THREE.Bone> = {}
@@ -162,13 +187,17 @@ export class Viewer3D {
   private transitionSource: Record<string, THREE.Quaternion> = {}
   private transitionProgress = 1.0
   private readonly TRANS_DUR = 0.8
+  /** モデル読み込み前に要求されたポーズ（読み込み完了後に適用する） */
+  private pendingPose: { name: string; keypoints?: Pose['keypoints'] | null } | null = null
+  private disposed = false
+  private readonly onWindowResize = () => this.resize()
 
   constructor(private container: HTMLElement) {
     // ── レンダラー ─────────────────────────────────────────────────────
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.shadowMap.enabled = true
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    this.renderer.shadowMap.type = THREE.PCFShadowMap
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
 
     // canvas をコンテナの左上に絶対配置し、コンテナと同サイズにする
@@ -210,7 +239,7 @@ export class Viewer3D {
 
     // ── ステージ ──────────────────────────────────────────────────────
     const stage = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.4, 1.4, 0.06, 64),
+      new THREE.CylinderGeometry(1.1, 1.1, 0.06, 64),
       new THREE.MeshStandardMaterial({ color: 0x18182a, metalness: 0.4, roughness: 0.6 })
     )
     stage.position.y = -0.03; stage.receiveShadow = true; this.scene.add(stage)
@@ -220,7 +249,7 @@ export class Viewer3D {
     // ResizeObserver でコンテナサイズ変化に追従
     this.ro = new ResizeObserver(() => this.resize())
     this.ro.observe(this.container)
-    window.addEventListener('resize', () => this.resize())
+    window.addEventListener('resize', this.onWindowResize)
 
     // ── アニメーションループ開始 ──────────────────────────────────────
     this.animate()
@@ -235,8 +264,10 @@ export class Viewer3D {
   }
 
   private animate() {
+    if (this.disposed) return
     this.rafId = requestAnimationFrame(() => this.animate())
-    const delta = Math.min(this.clock.getDelta(), 0.1)
+    this.timer.update()
+    const delta = Math.min(this.timer.getDelta(), 0.1)
     this.idleTime += delta
 
     // GLBモデルのボーンアニメーション
@@ -260,11 +291,12 @@ export class Viewer3D {
           if (bone) bone.quaternion.copy(tq)
         }
       }
-      // Spineの呼吸アニメーション（常にターゲット基準で適用）
+      // Spineの呼吸アニメーション
+      // 毎フレーム基準姿勢に戻してから揺らぎを足す（+= の累積によるドリフトを防ぐ）
       const spine = this.findBone('Spine')
-      const spineTarget = this.targetRotations['Spine']
-      if (spine) {
-        if (spineTarget && this.transitionProgress >= 1.0) spine.quaternion.copy(spineTarget)
+      const spineBase = this.targetRotations['Spine'] ?? this.bindPoseQuaternions['Spine']
+      if (spine && this.transitionProgress >= 1.0) {
+        if (spineBase) spine.quaternion.copy(spineBase)
         spine.rotation.x += Math.sin(this.idleTime * 0.8) * 0.003
         spine.rotation.z += Math.sin(this.idleTime * 0.4) * 0.002
       }
@@ -312,10 +344,7 @@ export class Viewer3D {
   // ── GLBモデル読み込み ─────────────────────────────────────────────
   loadModel(url: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      if (this.model) {
-        this.scene.remove(this.model)
-        this.model = null; this.bones = {}; this.bonesByBaseName = {}; this.targetRotations = {}
-      }
+      this.disposeModel()
       new GLTFLoader().load(
         url,
         (gltf) => {
@@ -350,7 +379,11 @@ export class Viewer3D {
           this.model.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale)
           this.scene.add(this.model)
           this.hidePlaceholder()   // ロード成功後にプレースホルダーを除去
-          setTimeout(() => this.transitionToPose('front_double_bicep'), 800)
+          // 読み込み中に要求されたポーズがあればそれを、無ければ初期ポーズを適用
+          const pending = this.pendingPose
+          this.pendingPose = null
+          if (pending) this.transitionToPose(pending.name, pending.keypoints)
+          else this.applyPredefinedPose('front_relaxed')
           resolve()
         },
         undefined,
@@ -359,30 +392,34 @@ export class Viewer3D {
     })
   }
 
+  /** GLBモデルが読み込まれているか */
+  get hasModel(): boolean { return this.model !== null }
+
   transitionToPose(poseName: string, keypoints?: Pose['keypoints'] | null) {
     if (this.model) {
-      keypoints ? this.applyKeypointPose(keypoints) : this.applyPredefinedPose(poseName)
-    } else if (this.placeholder) {
-      this.applyPlaceholderPose(poseName)
+      // keypoints があれば学習済みポーズ、無ければ定義済みポーズを適用
+      if (keypoints && Object.keys(keypoints).length > 0) this.applyKeypointPose(keypoints)
+      else this.applyPredefinedPose(poseName)
+    } else {
+      // モデル読み込み中でもプレースホルダーは動かし、完了後に本適用する
+      this.pendingPose = { name: poseName, keypoints }
+      if (this.placeholder) this.applyPlaceholderPose(poseName)
     }
   }
 
   private applyPredefinedPose(poseName: string) {
     const pose = POSE_ROTATIONS[poseName]
     if (!pose) { this.resetPose(); return }
-    const allBones = ['LeftArm','LeftForeArm','RightArm','RightForeArm',
-                      'LeftUpLeg','LeftLeg','RightUpLeg','RightLeg',
-                      'Spine','Spine1','Spine2','Neck','Hips','LeftShoulder','RightShoulder']
     // 現在のボーン回転をトランジション開始点としてキャプチャ
     this.transitionSource = {}
-    for (const name of allBones) {
+    for (const name of POSED_BONES) {
       const bone = this.findBone(name)
       if (bone) this.transitionSource[name] = bone.quaternion.clone()
     }
     // targetRotations を一度クリアして全ボーンを再設定（古いターゲットの残留を防ぐ）
     this.targetRotations = {}
     this.transitionProgress = 0.0
-    for (const name of allBones) {
+    for (const name of POSED_BONES) {
       this.targetRotations[name] = pose[name]
         ? new THREE.Quaternion().setFromEuler(new THREE.Euler(...(pose[name] as [number,number,number]), 'XYZ'))
         : (this.bindPoseQuaternions[name]?.clone() ?? new THREE.Quaternion())
@@ -396,11 +433,17 @@ export class Viewer3D {
   private applyKeypointPose(keypoints: Pose['keypoints']) {
     // 現在のボーン回転をトランジション開始点としてキャプチャ
     this.transitionSource = {}
-    for (const { bone: boneName } of Object.values(MP_TO_BONE)) {
-      const bone = this.findBone(boneName)
-      if (bone) this.transitionSource[boneName] = bone.quaternion.clone()
+    for (const name of POSED_BONES) {
+      const bone = this.findBone(name)
+      if (bone) this.transitionSource[name] = bone.quaternion.clone()
     }
+    // キーポイントで制御しないボーンはバインドポーズに戻す
+    // （前のポーズの回転が残るのを防ぐ）
     this.targetRotations = {}
+    for (const name of POSED_BONES) {
+      const bind = this.bindPoseQuaternions[name]
+      if (bind) this.targetRotations[name] = bind.clone()
+    }
     this.transitionProgress = 0.0
     const pos: Record<string, THREE.Vector3> = {}
     for (const [name, kp] of Object.entries(keypoints)) {
@@ -420,11 +463,21 @@ export class Viewer3D {
     }
   }
 
+  /** すべてのボーンをバインドポーズ（Tポーズ）に戻す */
   resetPose() {
-    this.targetRotations = {}
     this.transitionSource = {}
+    this.targetRotations = {}
+    for (const name of POSED_BONES) {
+      const bind = this.bindPoseQuaternions[name]
+      if (bind) this.targetRotations[name] = bind.clone()
+    }
+    // バインドポーズが未取得（モデル未ロード）なら回転を初期化する
+    if (Object.keys(this.targetRotations).length === 0) {
+      for (const [base, bone] of Object.entries(this.bonesByBaseName)) {
+        this.targetRotations[base] = bone.quaternion.clone()
+      }
+    }
     this.transitionProgress = 1.0
-    for (const bone of Object.values(this.bones)) bone.quaternion.set(0, 0, 0, 1)
     this.phTarget = { ...REST_PH }
   }
 
@@ -442,13 +495,14 @@ export class Viewer3D {
       const m = new THREE.Mesh(geo, mat)
       m.position.set(x, y, z); m.castShadow = true; g.add(m); return m
     }
+    // 身長 約1.8m。脚はステージ(y=0)に接地させる
     add(new THREE.SphereGeometry(0.12, 16, 12),           0,          1.70, 0)
     this.phTorso   = add(new THREE.CylinderGeometry(0.09, 0.11, 0.45, 8), 0, 1.35, 0)
     add(new THREE.CylinderGeometry(0.10, 0.09, 0.25, 8),  0,          0.99, 0)
     this.phLeftArm  = add(new THREE.CylinderGeometry(0.04, 0.04, 0.38, 8), REST_PH.lX, REST_PH.lY, 0)
     this.phRightArm = add(new THREE.CylinderGeometry(0.04, 0.04, 0.38, 8), REST_PH.rX, REST_PH.rY, 0)
-    add(new THREE.CylinderGeometry(0.05, 0.04, 0.50, 8), -0.10,       0.65, 0)
-    add(new THREE.CylinderGeometry(0.05, 0.04, 0.50, 8),  0.10,       0.65, 0)
+    add(new THREE.CylinderGeometry(0.06, 0.05, 0.90, 8), -0.10,       0.45, 0)
+    add(new THREE.CylinderGeometry(0.06, 0.05, 0.90, 8),  0.10,       0.45, 0)
     if (this.phLeftArm)  this.phLeftArm.rotation.z  = REST_PH.lZ
     if (this.phRightArm) this.phRightArm.rotation.z = REST_PH.rZ
     this.scene.add(g)
@@ -456,14 +510,39 @@ export class Viewer3D {
   }
 
   hidePlaceholder() {
-    if (this.placeholder) { this.scene.remove(this.placeholder); this.placeholder = null }
+    if (this.placeholder) {
+      this.scene.remove(this.placeholder)
+      disposeObject(this.placeholder)
+      this.placeholder = null
+    }
     this.phLeftArm = null; this.phRightArm = null; this.phTorso = null
   }
 
+  /** モデルをシーンから外し、ジオメトリ/マテリアル/テクスチャを解放する */
+  private disposeModel() {
+    if (!this.model) return
+    this.scene.remove(this.model)
+    disposeObject(this.model)
+    this.model = null
+    this.bones = {}
+    this.bonesByBaseName = {}
+    this.bindPoseQuaternions = {}
+    this.targetRotations = {}
+    this.transitionSource = {}
+    this.modelBaseScale = 1.0
+  }
+
   destroy() {
+    if (this.disposed) return
+    this.disposed = true
     cancelAnimationFrame(this.rafId)
     this.ro?.disconnect()
-    window.removeEventListener('resize', () => this.resize())
+    this.ro = null
+    window.removeEventListener('resize', this.onWindowResize)
+    this.controls.dispose()
+    this.disposeModel()
+    this.hidePlaceholder()
+    disposeObject(this.scene)
     this.renderer.dispose()
     this.renderer.domElement.remove()
   }
