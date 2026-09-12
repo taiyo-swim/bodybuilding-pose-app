@@ -2,3 +2,5 @@
 # インストール: pip install -r requirements.txt -r requirements-dev.txt
 pytest==8.3.4
 httpx==0.28.1
+# 動画からポーズを学習する際に使う（train_poses.py / pose_solver.py）
+# mediapipe と opencv-python は requirements.txt に既収録
