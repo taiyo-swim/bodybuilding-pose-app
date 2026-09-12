@@ -250,3 +250,171 @@ def test_solved_spine_chain_reproduces_torso_lean():
     want = pts["_shoulder_center"] - pts["_hip_center"]
     want = want / np.linalg.norm(want)
     assert np.allclose(world_dir(r, "Spine2"), want, atol=1e-6)
+
+
+# ── 時系列の分割（決めポーズ / トランジション）──────────────────────
+
+def synth_routine(fps: float = 30.0):
+    """「決め2秒 → つなぎ0.8秒 → 決め2.5秒 → つなぎ0.6秒 → 決め2秒」を合成する。
+
+    決め区間はランドマークを静止させ、つなぎ区間は腕を動かす。
+    """
+    plan = [
+        ("hold", 2.0, (1.0, 0.0, 0.0)),
+        ("move", 0.8, None),
+        ("hold", 2.5, (0.6, 0.8, 0.0)),
+        ("move", 0.6, None),
+        ("hold", 2.0, (0.2, 0.98, 0.0)),
+    ]
+    times, frames = [], []
+    t = 0.0
+    prev = plan[0][2]
+    for i, (kind, dur, target) in enumerate(plan):
+        n = max(1, int(dur * fps))
+        for k in range(n):
+            if kind == "hold":
+                arm = target
+                prev = target
+            else:
+                nxt = plan[i + 1][2]
+                f = (k + 1) / n
+                arm = tuple(p + (q - p) * f for p, q in zip(prev, nxt))
+            frames.append(build_landmarks(left_arm=arm, right_arm=(-arm[0], arm[1], arm[2])))
+            times.append(round(t, 4))
+            t += 1.0 / fps
+    return times, frames
+
+
+def test_segmentation_recovers_hold_transition_structure():
+    """静止と移動が交互に並ぶ動画から、決め3回・つなぎ2回が復元されること。"""
+    times, frames = synth_routine()
+    segs = ps.segment_motion(times, frames)
+    kinds = [s["kind"] for s in segs]
+    assert kinds == ["hold", "transition", "hold", "transition", "hold"], kinds
+
+
+def test_segmentation_hold_durations_are_plausible():
+    times, frames = synth_routine()
+    holds = [s for s in ps.segment_motion(times, frames) if s["kind"] == "hold"]
+    got = [h["duration"] for h in holds]
+    for want, actual in zip((2.0, 2.5, 2.0), got):
+        assert abs(actual - want) < 0.35, got
+
+
+def test_transitions_are_shorter_than_holds():
+    """フリーポーズの原則「決めは止め、つなぎは速く」が数値に出ること。"""
+    segs = ps.segment_motion(*synth_routine())
+    holds = [s["duration"] for s in segs if s["kind"] == "hold"]
+    trans = [s["duration"] for s in segs if s["kind"] == "transition"]
+    assert max(trans) < min(holds)
+
+
+def test_hold_representative_frame_is_the_stillest():
+    times, frames = synth_routine()
+    speeds = ps.smooth(ps.landmark_speeds(times, frames))
+    t = np.asarray(times)
+    for seg in ps.segment_motion(times, frames):
+        if seg["kind"] != "hold":
+            continue
+        lo = int(np.argmin(np.abs(t - seg["start"])))
+        hi = int(np.argmin(np.abs(t - seg["end"])))
+        assert speeds[seg["frame"]] <= speeds[lo:hi + 1].min() + 1e-9
+
+
+def test_static_video_is_a_single_hold():
+    frames = [build_landmarks() for _ in range(60)]
+    times = [i / 30.0 for i in range(60)]
+    segs = ps.segment_motion(times, frames)
+    assert [s["kind"] for s in segs] == ["hold"]
+
+
+def test_continuous_motion_has_no_hold():
+    """動き続ける動画からは決めポーズが出ないこと（誤検出しない）。"""
+    times, frames = [], []
+    for i in range(30):                       # 1秒で腕を大きく動かす
+        f = i / 30.0
+        times.append(i / 30.0)
+        frames.append(build_landmarks(left_arm=(1.0 - f, f, 0.0)))
+    segs = ps.segment_motion(times, frames)
+    assert all(s["kind"] == "transition" for s in segs), [s["kind"] for s in segs]
+
+
+def test_slow_drift_is_not_a_hold():
+    """速度は低いが動き続ける区間をホールドと誤認しないこと。
+
+    転換途中の姿勢が「決めポーズ」としてライブラリに入るのを防ぐ。
+    """
+    times, frames = [], []
+    for i in range(120):                      # 4秒かけてゆっくり腕を動かす
+        f = i / 120.0
+        times.append(i / 30.0)
+        frames.append(build_landmarks(left_arm=(1.0 - f, f, 0.0)))
+    speeds = ps.smooth(ps.landmark_speeds(times, frames))
+    assert speeds.max() < ps.HOLD_SPEED_MAX, "この動きは速度だけでは静止に見える"
+
+    segs = ps.segment_motion(times, frames)
+    assert all(s["kind"] == "transition" for s in segs), [s["kind"] for s in segs]
+
+
+def test_drift_measure_distinguishes_still_from_drifting():
+    still = [build_landmarks() for _ in range(30)]
+    assert ps.landmark_drift(still, 0, 29) < 1e-9
+
+    drifting = [build_landmarks(left_arm=(1.0 - i / 30.0, i / 30.0, 0.0))
+                for i in range(30)]
+    assert ps.landmark_drift(drifting, 0, 29) > 0.1
+
+
+def test_brief_slowdown_is_not_counted_as_hold():
+    """つなぎの途中の一瞬の減速をホールドと誤認しないこと。"""
+    times, frames = [], []
+    t = 0.0
+    for i in range(120):
+        # 中間で0.2秒だけ速度が落ちる動き
+        f = i / 120.0
+        speed = 0.05 if 0.45 < f < 0.55 else 1.0
+        frames.append(build_landmarks(left_arm=(1.0 - f * speed * 0.9, f, 0.0)))
+        times.append(round(t, 4)); t += 1 / 30.0
+    segs = ps.segment_motion(times, frames, hold_min_duration=0.45)
+    holds = [s for s in segs if s["kind"] == "hold"]
+    assert all(h["duration"] >= 0.45 for h in holds), [h["duration"] for h in holds]
+
+
+def test_extract_routine_returns_poses_and_transitions():
+    """動画1本から決めポーズとトランジション軌道の両方が取れること。
+
+    現行 extract_representative_pose() は1フレームしか返さないため、
+    ここが置き換えの本体になる。
+    """
+    times, frames = synth_routine()
+    out = ps.extract_routine(times, frames)
+
+    assert len(out["holds"]) == 3
+    assert len(out["transitions"]) == 2
+    # 決めポーズはボーン回転と診断値を持つ
+    for h in out["holds"]:
+        assert "bones" in h and "facing_deg" in h
+        assert "LeftArm" in h["bones"]
+    # トランジションは軌道（複数キーフレーム）を持つ
+    for tr in out["transitions"]:
+        assert len(tr["keyframes"]) >= 2
+
+
+def test_extract_routine_holds_differ_from_each_other():
+    """3つの決めポーズが別のポーズとして取れていること。"""
+    out = ps.extract_routine(*synth_routine())
+    arms = [world_dir(h, "LeftArm") for h in out["holds"]]
+    for a, b in zip(arms, arms[1:]):
+        assert np.linalg.norm(a - b) > 0.2, arms
+
+
+def test_speeds_are_zero_on_static_frames():
+    frames = [build_landmarks() for _ in range(10)]
+    times = [i / 30.0 for i in range(10)]
+    assert np.allclose(ps.landmark_speeds(times, frames), 0.0, atol=1e-9)
+
+
+def test_segment_motion_handles_degenerate_input():
+    assert ps.segment_motion([], []) == []
+    single = ps.segment_motion([0.0], [build_landmarks()])
+    assert len(single) == 1 and single[0]["kind"] == "hold"

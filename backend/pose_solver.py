@@ -320,3 +320,186 @@ def heel_raised(pts: dict[str, np.ndarray], side: str, margin: float = 0.02) -> 
     heel と foot_index の高さの差で見る（margin はメートル）。
     """
     return bool(pts[f"{side}_heel"][1] - pts[f"{side}_foot_index"][1] > margin)
+
+
+# ════════════════════════════════════════════════════════════════════
+# 時系列の分割: 「決めポーズ」と「トランジション」を分離する
+# ════════════════════════════════════════════════════════════════════
+#
+# 現行 extract_representative_pose() は動画1本から1フレームだけ返すため、
+# 動きが全部捨てられ、トランジションを学習できない。
+#
+# フリーポーズは「決めを2〜3秒止め、つなぎは速く」という構造なので、
+# ランドマークの速度を見れば両者を機械的に分離できる。
+#   速度が低い区間 → 決めポーズ（ポーズライブラリへ）
+#   速度が高い区間 → トランジション軌道（動きとして保存）
+
+# 速度を測るランドマーク（顔や指は誤差が大きいので使わない）
+VELOCITY_LANDMARKS = [
+    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
+    "left_wrist", "right_wrist", "left_hip", "right_hip",
+    "left_knee", "right_knee", "left_ankle", "right_ankle",
+]
+
+# 決めポーズと判定する速度のしきい値[m/s]と最短の静止時間[秒]
+# 実写では手ぶれや推定ノイズで静止中も速度が出るため、
+# 素材に合わせて調整する前提の既定値。
+HOLD_SPEED_MAX = 0.20
+HOLD_MIN_DURATION = 0.45
+
+# ホールド中に許容するランドマークの移動量[m]。
+# 速度が低いだけでは不十分で、ゆっくり動き続ける転換を
+# 決めポーズと誤認してしまう（転換途中の姿勢がライブラリに入る）。
+# 変位でも縛ることで「止まっている」ことを担保する。
+HOLD_MAX_DRIFT = 0.12
+
+# 速度は全ランドマークの平均ではなく「最も速い上位K個の平均」で測る。
+# 平均だと、腕だけを動かす転換が静止している体幹・脚に薄められて
+# 検出できない（腕だけの動きも転換である）。
+SPEED_TOP_K = 4
+
+
+def landmark_speeds(times: list[float], frames: list[np.ndarray]) -> np.ndarray:
+    """フレームごとの動きの速さ[m/s]を返す。
+
+    代表ランドマークのうち**最も速い上位 SPEED_TOP_K 個の平均**を使う。
+    times と frames は同じ長さ。frames は MediaPipe world landmarks (33,3)。
+    """
+    if len(frames) < 2:
+        return np.zeros(len(frames))
+
+    idx = [LM[n] for n in VELOCITY_LANDMARKS]
+    pts = np.stack([to_world(np.asarray(f, dtype=float))[idx] for f in frames])
+    t = np.asarray(times, dtype=float)
+    k = min(SPEED_TOP_K, len(idx))
+
+    speeds = np.zeros(len(frames))
+    for i in range(len(frames)):
+        lo = max(0, i - 1)
+        hi = min(len(frames) - 1, i + 1)
+        dt = t[hi] - t[lo]
+        if dt <= 1e-6:
+            continue
+        per_lm = np.linalg.norm(pts[hi] - pts[lo], axis=1) / dt
+        speeds[i] = float(np.mean(np.sort(per_lm)[-k:]))
+    return speeds
+
+
+def smooth(values: np.ndarray, window: int = 5) -> np.ndarray:
+    """移動平均。検出のちらつきを抑える。"""
+    if len(values) == 0 or window <= 1:
+        return values
+    window = min(window, len(values))
+    if window % 2 == 0:
+        window += 1
+    pad = window // 2
+    padded = np.pad(values, pad, mode="edge")
+    kernel = np.ones(window) / window
+    return np.convolve(padded, kernel, mode="valid")[: len(values)]
+
+
+def landmark_drift(frames: list[np.ndarray], lo: int, hi: int) -> float:
+    """区間 [lo, hi] における代表ランドマークの最大移動量[m]。"""
+    idx = [LM[n] for n in VELOCITY_LANDMARKS]
+    pts = np.stack([to_world(np.asarray(frames[i], dtype=float))[idx]
+                    for i in range(lo, hi + 1)])
+    center = np.median(pts, axis=0)
+    return float(np.max(np.linalg.norm(pts - center, axis=2)))
+
+
+def segment_motion(
+    times: list[float],
+    frames: list[np.ndarray],
+    *,
+    hold_speed_max: float = HOLD_SPEED_MAX,
+    hold_min_duration: float = HOLD_MIN_DURATION,
+    hold_max_drift: float = HOLD_MAX_DRIFT,
+) -> list[dict]:
+    """時系列を hold（決めポーズ）と transition（つなぎ）に分割する。
+
+    返り値は時刻順のセグメント列:
+      {"kind": "hold", "start", "end", "duration",
+       "frame": 代表フレーム索引, "mean_speed"}
+      {"kind": "transition", "start", "end", "duration",
+       "frames": [索引...], "peak_speed"}
+
+    hold は「代表1枚」を持つのでポーズライブラリに入れられる。
+    transition は軌道としてフレーム列を保持するので、動きそのものを再現できる。
+    """
+    if not frames:
+        return []
+    if len(frames) == 1:
+        return [{"kind": "hold", "start": times[0], "end": times[0],
+                 "duration": 0.0, "frame": 0, "mean_speed": 0.0}]
+
+    speeds = smooth(landmark_speeds(times, frames))
+    slow = speeds <= hold_speed_max
+
+    # 連続する同ラベルの区間にまとめる
+    runs: list[tuple[bool, int, int]] = []
+    start = 0
+    for i in range(1, len(slow) + 1):
+        if i == len(slow) or slow[i] != slow[start]:
+            runs.append((bool(slow[start]), start, i - 1))
+            start = i
+
+    # ホールドの条件を絞る:
+    #   - 短すぎる静止は拾わない（つなぎの途中の減速を除外）
+    #   - 変位が大きいものは拾わない（ゆっくり動き続ける転換を除外）
+    normalized: list[tuple[bool, int, int]] = []
+    for is_slow, lo, hi in runs:
+        if is_slow and times[hi] - times[lo] < hold_min_duration:
+            is_slow = False
+        if is_slow and landmark_drift(frames, lo, hi) > hold_max_drift:
+            is_slow = False
+        if normalized and normalized[-1][0] == is_slow:
+            normalized[-1] = (is_slow, normalized[-1][1], hi)
+        else:
+            normalized.append((is_slow, lo, hi))
+
+    segments: list[dict] = []
+    for is_slow, lo, hi in normalized:
+        span = {"start": round(times[lo], 3), "end": round(times[hi], 3),
+                "duration": round(times[hi] - times[lo], 3)}
+        if is_slow:
+            # 最も静止しているフレームを代表にする
+            rep = lo + int(np.argmin(speeds[lo:hi + 1]))
+            segments.append({"kind": "hold", **span, "frame": rep,
+                             "mean_speed": round(float(np.mean(speeds[lo:hi + 1])), 4)})
+        else:
+            segments.append({"kind": "transition", **span,
+                             "frames": list(range(lo, hi + 1)),
+                             "peak_speed": round(float(np.max(speeds[lo:hi + 1])), 4)})
+    return segments
+
+
+def extract_routine(times: list[float], frames: list[np.ndarray]) -> dict:
+    """動画1本から、決めポーズ列とトランジション軌道の両方を取り出す。
+
+    現行 extract_representative_pose() の置き換え。あちらは1枚しか返さない。
+    """
+    segments = segment_motion(times, frames)
+    holds, transitions = [], []
+    for seg in segments:
+        if seg["kind"] == "hold":
+            solved = solve_pose(frames[seg["frame"]])
+            holds.append({
+                "time": seg["start"], "duration": seg["duration"],
+                "timestamp": round(times[seg["frame"]], 3),
+                **solved,
+            })
+        else:
+            transitions.append({
+                "time": seg["start"], "duration": seg["duration"],
+                "peak_speed": seg["peak_speed"],
+                # 軌道は始点・中間・終点の3点に間引いて保持する
+                "keyframes": [solve_pose(frames[i]) for i in _thin(seg["frames"], 3)],
+            })
+    return {"holds": holds, "transitions": transitions, "segments": segments}
+
+
+def _thin(indices: list[int], count: int) -> list[int]:
+    if len(indices) <= count:
+        return indices
+    picks = np.linspace(0, len(indices) - 1, count).astype(int)
+    return [indices[i] for i in picks]
