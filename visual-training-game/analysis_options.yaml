@@ -1,0 +1,20 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  exclude:
+    - "**/*.g.dart"
+  errors:
+    # 「動いたように見える」で進めないため、警告は原則エラー扱いにする（仕様書 12）
+    todo: ignore
+  language:
+    strict-casts: true
+    strict-inference: true
+    strict-raw-types: true
+
+linter:
+  rules:
+    - avoid_print
+    - prefer_final_locals
+    - prefer_const_constructors
+    - unnecessary_parenthesis
+    - always_declare_return_types

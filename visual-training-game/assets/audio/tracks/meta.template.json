@@ -1,0 +1,21 @@
+{
+  "track_id": "",
+  "title": "",
+  "bpm": 120,
+  "loop": true,
+  "generator": {
+    "service": "",
+    "plan": "",
+    "generated_at": "",
+    "prompt": ""
+  },
+  "license": {
+    "category": "",
+    "commercial_use": null,
+    "attribution_required": null,
+    "ownership": "",
+    "terms_url": "",
+    "notes": ""
+  },
+  "stems": []
+}

@@ -39,3 +39,7 @@ models/
 
 # Claude Code
 .claude/settings.local.json
+
+# visual-training-game (Flutter)
+visual-training-game/.dart_tool/
+visual-training-game/build/

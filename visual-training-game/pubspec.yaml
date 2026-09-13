@@ -1,0 +1,42 @@
+name: visual_training_game
+description: "見る力を試すリズムゲーム（ガボールパッチ判別）"
+publish_to: 'none'
+
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.3
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ローカル保存。試行ログを全件保持するため KVS ではなく SQLite（仕様書 2）
+  drift: ^2.35.0
+  drift_flutter: ^0.3.1
+  path: ^1.9.1
+  path_provider: ^2.1.6
+
+  # 低レイテンシ再生。BGM 未完成の間はメトロノームの駆動に使う（仕様書 2.1 / 11-6）
+  just_audio: ^0.10.6
+
+  # プレイ中の画面輝度固定（仕様書 3.4）
+  screen_brightness: ^2.1.11
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  build_runner: ^2.9.0
+  drift_dev: ^2.35.0
+
+flutter:
+  uses-material-design: true
+
+  # 刺激描画はフラグメントシェーダー。CPU 描画では間に合わない（仕様書 2）
+  shaders:
+    - shaders/gabor.frag
+
+  assets:
+    - assets/audio/metronome/
+    - assets/audio/tracks/
