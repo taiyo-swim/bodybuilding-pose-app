@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import 'data/database.dart';
 import 'stimulus/gabor_shader.dart';
 import 'ui/dev_menu_screen.dart';
 import 'ui/palette.dart';
@@ -17,6 +20,7 @@ class VisualTrainingApp extends StatefulWidget {
 
 class _VisualTrainingAppState extends State<VisualTrainingApp> {
   GaborShader? _shader;
+  late final AppDatabase _database = AppDatabase();
   Object? _error;
 
   @override
@@ -42,6 +46,7 @@ class _VisualTrainingAppState extends State<VisualTrainingApp> {
   @override
   void dispose() {
     _shader?.dispose();
+    unawaited(_database.close());
     super.dispose();
   }
 
@@ -62,7 +67,7 @@ class _VisualTrainingAppState extends State<VisualTrainingApp> {
             child: Center(child: CircularProgressIndicator()),
           );
         }
-        return DevMenuScreen(shader: shader);
+        return DevMenuScreen(shader: shader, database: _database);
       },
     ),
   );

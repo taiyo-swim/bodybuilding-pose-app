@@ -1,17 +1,21 @@
 import 'package:flutter/material.dart';
 
+import '../data/database.dart';
 import '../stimulus/gabor_shader.dart';
+import 'beat_sync_check_screen.dart';
 import 'dither_check_screen.dart';
 import 'palette.dart';
+import 'play_screen.dart';
 
 /// 開発用のメニュー。
 ///
 /// 仕様書 9 の「ホーム」画面ではない。Phase 1 の間、実機確認が必要な画面へ
 /// 素早く飛ぶための入口として置いている。Phase 2 でホーム画面に置き換える。
 class DevMenuScreen extends StatelessWidget {
-  const DevMenuScreen({required this.shader, super.key});
+  const DevMenuScreen({required this.shader, required this.database, super.key});
 
   final GaborShader shader;
+  final AppDatabase database;
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -31,11 +35,45 @@ class DevMenuScreen extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           _MenuTile(
+            title: 'プレイ（3分）',
+            subtitle: '固視点 → 提示 → 回答 → フィードバックのコアループ（仕様書 4）',
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) =>
+                    PlayScreen(shader: shader, database: database),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          _MenuTile(
+            title: 'プレイ（30秒・記録なし）',
+            subtitle: 'コアループの動作確認用。試行ログは残さない',
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => PlayScreen(
+                  shader: shader,
+                  sessionDuration: const Duration(seconds: 30),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          _MenuTile(
             title: 'ディザリング確認',
             subtitle: 'コントラスト 1〜5% が段々にならず滑らかに見えるか（仕様書 3.2 / 11-2）',
             onTap: () => Navigator.of(context).push<void>(
               MaterialPageRoute<void>(
                 builder: (_) => DitherCheckScreen(shader: shader),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          _MenuTile(
+            title: '音ズレ計測',
+            subtitle: 'ビートと音のずれ（仕様書 11-6）。実機での外部録画が要る',
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => const BeatSyncCheckScreen(),
               ),
             ),
           ),
