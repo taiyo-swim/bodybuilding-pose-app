@@ -25,6 +25,12 @@ class GaborParams {
   /// θ: 縞の向き。
   final GaborOrientation orientation;
 
+  /// 初期の空間周波数帯（仕様書 5.4）。ここで飽和したら 13 cpd に移る。
+  static const double defaultCyclesPerDegree = 6.5;
+
+  /// 初期の λ（視角の分）。6.5 cpd 相当。
+  static const double defaultWavelengthArcmin = 60.0 / defaultCyclesPerDegree;
+
   /// 空間周波数（cycles per degree）。仕様書 5.4 のシーズン設計で使う単位。
   double get cyclesPerDegree =>
       ViewingGeometry.cyclesPerDegreeFromArcmin(wavelengthArcmin);

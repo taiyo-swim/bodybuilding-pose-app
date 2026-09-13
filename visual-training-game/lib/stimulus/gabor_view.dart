@@ -15,12 +15,20 @@ class GaborView extends StatelessWidget {
     required this.shader,
     required this.params,
     required this.geometry,
+    this.ditherAmplitude = GaborShader.defaultDitherAmplitude,
+    this.ditherSeed = 0,
     super.key,
   });
 
   final GaborShader shader;
   final GaborParams params;
   final ViewingGeometry geometry;
+
+  /// ディザ振幅。1.0 で ±1/255（仕様書 3.2）。0 は検証用の比較条件のみ。
+  final double ditherAmplitude;
+
+  /// ノイズパターンのシード。試行ごとに変え、提示中は固定する。
+  final double ditherSeed;
 
   @override
   Widget build(BuildContext context) => SizedBox.expand(
@@ -29,6 +37,8 @@ class GaborView extends StatelessWidget {
         shader: shader,
         params: params,
         geometry: geometry,
+        ditherAmplitude: ditherAmplitude,
+        ditherSeed: ditherSeed,
       ),
     ),
   );
@@ -39,11 +49,15 @@ class _GaborPainter extends CustomPainter {
     required this.shader,
     required this.params,
     required this.geometry,
+    required this.ditherAmplitude,
+    required this.ditherSeed,
   });
 
   final GaborShader shader;
   final GaborParams params;
   final ViewingGeometry geometry;
+  final double ditherAmplitude;
+  final double ditherSeed;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -52,6 +66,8 @@ class _GaborPainter extends CustomPainter {
       size: size,
       params: params,
       geometry: geometry,
+      ditherAmplitude: ditherAmplitude,
+      ditherSeed: ditherSeed,
     );
     canvas.drawRect(Offset.zero & size, Paint()..shader = configured);
   }
@@ -60,5 +76,7 @@ class _GaborPainter extends CustomPainter {
   bool shouldRepaint(_GaborPainter oldDelegate) =>
       oldDelegate.params != params ||
       oldDelegate.geometry != geometry ||
+      oldDelegate.ditherAmplitude != ditherAmplitude ||
+      oldDelegate.ditherSeed != ditherSeed ||
       !identical(oldDelegate.shader, shader);
 }

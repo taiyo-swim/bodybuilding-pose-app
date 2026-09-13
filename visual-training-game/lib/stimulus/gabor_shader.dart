@@ -19,6 +19,12 @@ class GaborShader {
   /// 描画半径をσの何倍にするか。3.0 で「描画サイズ = 6σ」（仕様書 3.1）。
   static const double radiusSigma = 3.0;
 
+  /// ディザ振幅の既定値。1.0 で ±1/255（仕様書 3.2）。
+  ///
+  /// **本番では 0 にしてはいけない。** 0 は検証用の比較条件であって、
+  /// 実装するまでコントラスト5%未満の条件は信用できない。
+  static const double defaultDitherAmplitude = 1.0;
+
   final ui.FragmentShader _shader;
 
   bool _disposed = false;
@@ -38,6 +44,8 @@ class GaborShader {
     required Size size,
     required GaborParams params,
     required ViewingGeometry geometry,
+    double ditherAmplitude = defaultDitherAmplitude,
+    double ditherSeed = 0,
   }) {
     assert(!_disposed, 'disposed した GaborShader は使えない');
     final double lambdaPx = params.lambdaLogicalPixels(geometry);
@@ -46,6 +54,8 @@ class GaborShader {
       contrast: params.contrast,
       lambdaLogicalPixels: lambdaPx,
       thetaRadians: params.orientation.radians,
+      ditherAmplitude: ditherAmplitude,
+      ditherSeed: ditherSeed,
     );
   }
 
@@ -55,6 +65,8 @@ class GaborShader {
     required double contrast,
     required double lambdaLogicalPixels,
     required double thetaRadians,
+    double ditherAmplitude = defaultDitherAmplitude,
+    double ditherSeed = 0,
   }) {
     assert(!_disposed, 'disposed した GaborShader は使えない');
     assert(lambdaLogicalPixels > 0, 'λ が 0 以下ではゼロ除算になる');
@@ -64,7 +76,9 @@ class GaborShader {
       ..setFloat(2, contrast) // uContrast
       ..setFloat(3, lambdaLogicalPixels) // uLambdaPx
       ..setFloat(4, thetaRadians) // uThetaRad
-      ..setFloat(5, radiusSigma); // uRadiusSigma
+      ..setFloat(5, radiusSigma) // uRadiusSigma
+      ..setFloat(6, ditherAmplitude) // uDitherAmp
+      ..setFloat(7, ditherSeed); // uDitherSeed
     return _shader;
   }
 

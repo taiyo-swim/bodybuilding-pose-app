@@ -38,6 +38,8 @@ uniform float uContrast;    // C: マイケルソンコントラスト 0..1
 uniform float uLambdaPx;    // λ: 波長（論理px）。σ も同値
 uniform float uThetaRad;    // θ: 向き（ラジアン）
 uniform float uRadiusSigma; // 描画半径をσの倍数で指定。3.0 で「描画サイズ = 6σ」
+uniform float uDitherAmp;   // ディザ振幅。1.0 で ±1/255。0.0 で無効（比較検証用）
+uniform float uDitherSeed;  // ノイズパターンのシード。試行ごとに変える
 
 out vec4 fragColor;
 
@@ -47,6 +49,28 @@ const float kPi = 3.1415926535897932;
 // 仕様書の式の定数項は 0.5 だが、0.5 と 128/255 では 0.4/255 ずれる。
 // パッチの平均輝度を周囲と厳密に一致させるほうが重要なので、両方 128/255 に揃える。
 const float kMidGray = 128.0 / 255.0;
+
+// 値ノイズ用のハッシュ。sin ベースのハッシュは端末によって精度が落ちるため使わない。
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+// 三角確率密度（TPDF）のノイズを返す。値域は [-1, 1]。
+//
+// 一様ノイズではなく TPDF を使うのは、量子化誤差とノイズを無相関にし、
+// ノイズ変調（残差が信号に依存してざわつく現象）を消すため。
+// 独立な一様乱数2つの和は三角分布になる。
+//
+// シードはフレームごとではなく**試行ごと**に変える。
+// 提示中にパターンが動くと ±1階調の時間的ちらつきが生じ、
+// 微弱な動的マスクとして働きかねないため（仕様書 4 のマスク条件とは別物になってしまう）。
+float tpdfNoise(vec2 fragCoord, float seed) {
+    float n1 = hash12(fragCoord + vec2(seed, 0.0));
+    float n2 = hash12(fragCoord + vec2(0.0, seed) + 17.0);
+    return n1 + n2 - 1.0;
+}
 
 void main() {
     // パッチの表示位置は常に画面中央固定（仕様書 3.1）。移動させない。
@@ -65,6 +89,15 @@ void main() {
     float grating = sin(2.0 * kPi * xr / uLambdaPx);
 
     float lum = kMidGray + 0.5 * uContrast * envelope * grating;
+
+    // ディザリング（仕様書 3.2、必須）
+    //
+    // 8bit 表示では中間グレー付近でコントラスト3%を表現しようとすると
+    // 使える階調が ±4 しかない。そのままでは縞が段々になり、
+    // 被験者は「縞」ではなく「量子化の輪郭」を見てしまう。
+    //
+    // 最終出力に 1/255 スケールのノイズを加算して量子化誤差を分散させる。
+    lum += tpdfNoise(FlutterFragCoord().xy, uDitherSeed) * uDitherAmp / 255.0;
 
     fragColor = vec4(vec3(clamp(lum, 0.0, 1.0)), 1.0);
 }
