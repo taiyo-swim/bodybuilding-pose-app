@@ -13,6 +13,7 @@
 flutter pub get
 dart run build_runner build --delete-conflicting-outputs   # drift の生成コード
 flutter test
+tool/compile_shaders.sh                                     # シェーダーのコンパイル検証
 flutter run                                                 # 実機推奨
 ```
 

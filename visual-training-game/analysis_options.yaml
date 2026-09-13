@@ -3,6 +3,9 @@ include: package:flutter_lints/flutter.yaml
 analyzer:
   exclude:
     - "**/*.g.dart"
+    - build/**
+    - android/**
+    - ios/**
   errors:
     # 「動いたように見える」で進めないため、警告は原則エラー扱いにする（仕様書 12）
     todo: ignore
